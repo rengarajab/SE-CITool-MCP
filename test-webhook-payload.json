@@ -1,0 +1,32 @@
+{
+  "ref": "refs/heads/main",
+  "repository": {
+    "full_name": "rengaraja-b/SE-CITool-MCP",
+    "name": "SE-CITool-MCP",
+    "owner": {
+      "name": "rengaraja-b",
+      "email": "rengaraja.b@gmail.com"
+    },
+    "html_url": "https://github.com/rengaraja-b/SE-CITool-MCP"
+  },
+  "head_commit": {
+    "id": "abc123def456789012345678901234567890abcd",
+    "message": "test: manual deployment trigger",
+    "timestamp": "2025-11-02T10:30:00Z",
+    "url": "https://github.com/rengaraja-b/SE-CITool-MCP/commit/abc123def456789012345678901234567890abcd",
+    "author": {
+      "name": "Rengaraja B",
+      "email": "rengaraja.b@gmail.com",
+      "username": "rengaraja-b"
+    },
+    "committer": {
+      "name": "Rengaraja B",
+      "email": "rengaraja.b@gmail.com",
+      "username": "rengaraja-b"
+    }
+  },
+  "pusher": {
+    "name": "rengaraja-b",
+    "email": "rengaraja.b@gmail.com"
+  }
+}

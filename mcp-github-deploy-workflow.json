@@ -1,0 +1,347 @@
+{
+  "name": "MCP GitHub Deploy with AI Gmail Notifications",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "mcp-github-deploy",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "github-webhook-trigger",
+      "name": "GitHub Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [250, 350],
+      "webhookId": "mcp-github-deploy"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.ref }}",
+              "operation": "equals",
+              "value2": "refs/heads/main"
+            }
+          ]
+        }
+      },
+      "id": "filter-main-branch",
+      "name": "Filter Main Branch",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [450, 350]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"status\": \"deployment_triggered\", \"commit\": $json.head_commit.id, \"job_id\": $json.head_commit.id.substring(0, 8) + '-' + Date.now() } }}",
+        "options": {}
+      },
+      "id": "webhook-response",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [650, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate Job ID and prepare MCP client data\nconst commitId = $input.item.json.head_commit.id;\nconst timestamp = Date.now();\nconst jobId = commitId.substring(0, 8) + '-' + timestamp;\n\nreturn {\n  json: {\n    jobId: jobId,\n    repository: $input.item.json.repository.full_name,\n    branch: $input.item.json.ref.replace('refs/heads/', ''),\n    commit: {\n      id: commitId,\n      shortId: commitId.substring(0, 7),\n      message: $input.item.json.head_commit.message,\n      author: $input.item.json.head_commit.author.name,\n      email: $input.item.json.head_commit.author.email,\n      url: $input.item.json.head_commit.url,\n      timestamp: $input.item.json.head_commit.timestamp\n    },\n    deploymentTime: new Date().toISOString(),\n    mcpServerUrl: 'http://localhost:3000/mcp',\n    githubToken: $env.GITHUB_TOKEN || ''\n  }\n};"
+      },
+      "id": "prepare-mcp-data",
+      "name": "Prepare MCP Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [650, 350]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/mcp/github/connect",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"repository\": $json.repository,\n  \"token\": $json.githubToken\n} }}",
+        "options": {}
+      },
+      "id": "mcp-connect-github",
+      "name": "MCP: Connect to GitHub",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [850, 350]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3000/mcp/github/deploy",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n  \"repository\": $node['Prepare MCP Data'].json.repository,\n  \"branch\": $node['Prepare MCP Data'].json.branch,\n  \"commit\": $node['Prepare MCP Data'].json.commit.id,\n  \"deploymentScript\": \"cd /var/www/SE-CITool-MCP && git pull origin main && npm install && npm run build && pm2 restart se-citool\"\n} }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "mcp-execute-deployment",
+      "name": "MCP: Execute Deployment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1050, 350]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.success }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-deployment-status",
+      "name": "Check Deployment Status",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [1250, 350]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format success message for Gmail\nconst mcpData = $node['Prepare MCP Data'].json;\nconst deploymentResult = $input.item.json;\n\nreturn {\n  json: {\n    jobId: mcpData.jobId,\n    status: 'SUCCESS',\n    repository: mcpData.repository,\n    branch: mcpData.branch,\n    commit: mcpData.commit,\n    deploymentTime: mcpData.deploymentTime,\n    completionTime: new Date().toISOString(),\n    duration: deploymentResult.duration || 'N/A',\n    logs: deploymentResult.stdout || 'Deployment completed successfully',\n    emailSubject: `✅ Deployment Success - Job ${mcpData.jobId} - ${new Date().toLocaleString()}`,\n    emailRecipient: 'rengaraja.b@gmail.com'\n  }\n};"
+      },
+      "id": "format-success-data",
+      "name": "Format Success Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and prepare error logs\nconst mcpData = $node['Prepare MCP Data'].json;\nconst deploymentResult = $input.item.json;\n\n// Extract meaningful error information\nconst stderr = deploymentResult.stderr || deploymentResult.error || 'Unknown error';\nconst stdout = deploymentResult.stdout || '';\n\n// Parse error lines\nconst errorLines = stderr.split('\\n').filter(line => {\n  const trimmed = line.trim();\n  return trimmed && (\n    trimmed.includes('Error') ||\n    trimmed.includes('error') ||\n    trimmed.includes('Failed') ||\n    trimmed.includes('failed') ||\n    trimmed.includes('Exception') ||\n    trimmed.includes('FATAL') ||\n    trimmed.includes('npm ERR!') ||\n    trimmed.includes('at ') ||  // Stack traces\n    trimmed.match(/^\\s+at\\s+/)\n  );\n});\n\n// Get critical error information\nconst criticalErrors = errorLines.slice(0, 50).join('\\n');\nconst rawErrorLog = criticalErrors || stderr.split('\\n').slice(-30).join('\\n');\n\nreturn {\n  json: {\n    jobId: mcpData.jobId,\n    status: 'FAILED',\n    repository: mcpData.repository,\n    branch: mcpData.branch,\n    commit: mcpData.commit,\n    deploymentTime: mcpData.deploymentTime,\n    failureTime: new Date().toISOString(),\n    rawErrorLog: rawErrorLog,\n    fullStderr: stderr,\n    stdout: stdout,\n    errorSummary: deploymentResult.errorMessage || 'Deployment failed',\n    emailRecipient: 'rengaraja.b@gmail.com'\n  }\n};"
+      },
+      "id": "extract-error-logs",
+      "name": "Extract Error Logs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 450]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "create",
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "gpt-4o-mini"
+        },
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a DevOps AI assistant specializing in analyzing deployment errors. Your task is to:\n1. Analyze the error logs provided\n2. Identify the root cause of the deployment failure\n3. Provide a clear, professional explanation suitable for an email\n4. Suggest actionable solutions\n5. Keep the explanation concise but comprehensive (150-300 words)\n6. Use professional language appropriate for technical stakeholders"
+            },
+            {
+              "role": "user",
+              "content": "=Analyze this deployment failure:\n\n**Repository:** {{ $json.repository }}\n**Branch:** {{ $json.branch }}\n**Commit:** {{ $json.commit.shortId }} - {{ $json.commit.message }}\n**Failure Time:** {{ $json.failureTime }}\n\n**Error Logs:**\n```\n{{ $json.rawErrorLog }}\n```\n\n**Additional Context:**\n{{ $json.errorSummary }}\n\nProvide a professional analysis suitable for an email notification."
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "openai-enhance-error",
+      "name": "OpenAI: Enhance Error Message",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.4,
+      "position": [1650, 450],
+      "credentials": {
+        "openAiApi": {
+          "id": "1",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Prepare final error email data\nconst errorData = $node['Extract Error Logs'].json;\nconst aiAnalysis = $input.item.json.choices[0].message.content;\n\nreturn {\n  json: {\n    jobId: errorData.jobId,\n    status: 'FAILED',\n    emailSubject: `❌ Deployment Failed - Job ${errorData.jobId} - ${new Date().toLocaleString()}`,\n    emailRecipient: errorData.emailRecipient,\n    repository: errorData.repository,\n    branch: errorData.branch,\n    commit: errorData.commit,\n    deploymentTime: errorData.deploymentTime,\n    failureTime: errorData.failureTime,\n    aiAnalysis: aiAnalysis,\n    rawErrorLog: errorData.rawErrorLog,\n    commitUrl: errorData.commit.url\n  }\n};"
+      },
+      "id": "prepare-error-email",
+      "name": "Prepare Error Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1850, 450]
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.emailRecipient }}",
+        "subject": "={{ $json.emailSubject }}",
+        "emailType": "html",
+        "message": "=<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }\n    .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 10px 10px 0 0; text-align: center; }\n    .header h1 { margin: 0; font-size: 28px; }\n    .job-id { background: rgba(255,255,255,0.2); display: inline-block; padding: 8px 16px; border-radius: 20px; margin-top: 10px; font-size: 14px; }\n    .content { background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px; }\n    .status-badge { display: inline-block; padding: 8px 20px; border-radius: 20px; font-weight: bold; margin-bottom: 20px; }\n    .status-success { background: #10b981; color: white; }\n    .status-failed { background: #ef4444; color: white; }\n    .info-grid { display: grid; grid-template-columns: 150px 1fr; gap: 12px; margin: 20px 0; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }\n    .info-label { font-weight: 600; color: #6b7280; }\n    .info-value { color: #1f2937; }\n    .section { margin: 25px 0; }\n    .section-title { font-size: 18px; font-weight: 600; color: #4b5563; margin-bottom: 12px; border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }\n    .code-block { background: #1f2937; color: #f3f4f6; padding: 20px; border-radius: 8px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; }\n    .commit-info { background: #eff6ff; padding: 15px; border-left: 4px solid #3b82f6; border-radius: 4px; margin: 15px 0; }\n    .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 12px; }\n    .button { display: inline-block; padding: 12px 24px; background: #3b82f6; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; margin: 10px 5px; }\n    .button:hover { background: #2563eb; }\n  </style>\n</head>\n<body>\n  <div class=\"header\">\n    <h1>✅ Deployment Successful</h1>\n    <div class=\"job-id\">Job ID: {{ $json.jobId }}</div>\n  </div>\n  \n  <div class=\"content\">\n    <span class=\"status-badge status-success\">DEPLOYMENT SUCCESS</span>\n    \n    <div class=\"info-grid\">\n      <div class=\"info-label\">Repository:</div>\n      <div class=\"info-value\">{{ $json.repository }}</div>\n      \n      <div class=\"info-label\">Branch:</div>\n      <div class=\"info-value\">{{ $json.branch }}</div>\n      \n      <div class=\"info-label\">Started:</div>\n      <div class=\"info-value\">{{ new Date($json.deploymentTime).toLocaleString() }}</div>\n      \n      <div class=\"info-label\">Completed:</div>\n      <div class=\"info-value\">{{ new Date($json.completionTime).toLocaleString() }}</div>\n      \n      <div class=\"info-label\">Duration:</div>\n      <div class=\"info-value\">{{ $json.duration }}</div>\n    </div>\n    \n    <div class=\"section\">\n      <div class=\"section-title\">📝 Commit Information</div>\n      <div class=\"commit-info\">\n        <strong>Commit:</strong> {{ $json.commit.shortId }}<br>\n        <strong>Author:</strong> {{ $json.commit.author }}<br>\n        <strong>Message:</strong> {{ $json.commit.message }}<br>\n        <strong>Time:</strong> {{ new Date($json.commit.timestamp).toLocaleString() }}\n      </div>\n      <a href=\"{{ $json.commit.url }}\" class=\"button\">View Commit on GitHub</a>\n    </div>\n    \n    <div class=\"section\">\n      <div class=\"section-title\">📋 Deployment Logs</div>\n      <div class=\"code-block\">{{ $json.logs }}</div>\n    </div>\n    \n    <div class=\"footer\">\n      <p>This is an automated message from your MCP GitHub Deployment System</p>\n      <p>Powered by n8n Workflow Automation | Model Context Protocol (MCP)</p>\n    </div>\n  </div>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "send-success-email",
+      "name": "Send Success Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1650, 250],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "2",
+          "name": "Gmail OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.emailRecipient }}",
+        "subject": "={{ $json.emailSubject }}",
+        "emailType": "html",
+        "message": "=<!DOCTYPE html>\n<html>\n<head>\n  <style>\n    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }\n    .header { background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; padding: 30px; border-radius: 10px 10px 0 0; text-align: center; }\n    .header h1 { margin: 0; font-size: 28px; }\n    .job-id { background: rgba(255,255,255,0.2); display: inline-block; padding: 8px 16px; border-radius: 20px; margin-top: 10px; font-size: 14px; }\n    .content { background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px; }\n    .status-badge { display: inline-block; padding: 8px 20px; border-radius: 20px; font-weight: bold; margin-bottom: 20px; background: #ef4444; color: white; }\n    .info-grid { display: grid; grid-template-columns: 150px 1fr; gap: 12px; margin: 20px 0; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }\n    .info-label { font-weight: 600; color: #6b7280; }\n    .info-value { color: #1f2937; }\n    .section { margin: 25px 0; }\n    .section-title { font-size: 18px; font-weight: 600; color: #4b5563; margin-bottom: 12px; border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }\n    .ai-analysis { background: #fef3c7; padding: 20px; border-left: 4px solid #f59e0b; border-radius: 4px; margin: 15px 0; }\n    .ai-badge { display: inline-block; background: #f59e0b; color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 600; margin-bottom: 10px; }\n    .code-block { background: #1f2937; color: #f3f4f6; padding: 20px; border-radius: 8px; overflow-x: auto; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; max-height: 400px; overflow-y: auto; }\n    .commit-info { background: #fee2e2; padding: 15px; border-left: 4px solid #ef4444; border-radius: 4px; margin: 15px 0; }\n    .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb; color: #6b7280; font-size: 12px; }\n    .button { display: inline-block; padding: 12px 24px; background: #3b82f6; color: white; text-decoration: none; border-radius: 6px; font-weight: 600; margin: 10px 5px; }\n    .button:hover { background: #2563eb; }\n    .alert-box { background: #fef2f2; border: 2px solid #fecaca; padding: 15px; border-radius: 8px; margin: 15px 0; }\n  </style>\n</head>\n<body>\n  <div class=\"header\">\n    <h1>❌ Deployment Failed</h1>\n    <div class=\"job-id\">Job ID: {{ $json.jobId }}</div>\n  </div>\n  \n  <div class=\"content\">\n    <span class=\"status-badge\">DEPLOYMENT FAILED</span>\n    \n    <div class=\"alert-box\">\n      <strong>⚠️ Action Required:</strong> The deployment has failed and requires immediate attention from the development team.\n    </div>\n    \n    <div class=\"info-grid\">\n      <div class=\"info-label\">Repository:</div>\n      <div class=\"info-value\">{{ $json.repository }}</div>\n      \n      <div class=\"info-label\">Branch:</div>\n      <div class=\"info-value\">{{ $json.branch }}</div>\n      \n      <div class=\"info-label\">Started:</div>\n      <div class=\"info-value\">{{ new Date($json.deploymentTime).toLocaleString() }}</div>\n      \n      <div class=\"info-label\">Failed:</div>\n      <div class=\"info-value\">{{ new Date($json.failureTime).toLocaleString() }}</div>\n    </div>\n    \n    <div class=\"section\">\n      <div class=\"section-title\">📝 Commit Information</div>\n      <div class=\"commit-info\">\n        <strong>Commit:</strong> {{ $json.commit.shortId }}<br>\n        <strong>Author:</strong> {{ $json.commit.author }}<br>\n        <strong>Message:</strong> {{ $json.commit.message }}<br>\n        <strong>Time:</strong> {{ new Date($json.commit.timestamp).toLocaleString() }}\n      </div>\n      <a href=\"{{ $json.commitUrl }}\" class=\"button\">View Commit on GitHub</a>\n    </div>\n    \n    <div class=\"section\">\n      <div class=\"section-title\">🤖 AI-Enhanced Error Analysis</div>\n      <div class=\"ai-analysis\">\n        <div class=\"ai-badge\">POWERED BY GPT-4</div>\n        {{ $json.aiAnalysis }}\n      </div>\n    </div>\n    \n    <div class=\"section\">\n      <div class=\"section-title\">📋 Raw Error Logs</div>\n      <div class=\"code-block\">{{ $json.rawErrorLog }}</div>\n    </div>\n    \n    <div class=\"footer\">\n      <p>This is an automated message from your MCP GitHub Deployment System</p>\n      <p>Powered by n8n Workflow Automation | Model Context Protocol (MCP) | OpenAI GPT-4</p>\n    </div>\n  </div>\n</body>\n</html>",
+        "options": {}
+      },
+      "id": "send-error-email",
+      "name": "Send Error Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2050, 450],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "2",
+          "name": "Gmail OAuth2"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "GitHub Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Filter Main Branch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Main Branch": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare MCP Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare MCP Data": {
+      "main": [
+        [
+          {
+            "node": "MCP: Connect to GitHub",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MCP: Connect to GitHub": {
+      "main": [
+        [
+          {
+            "node": "MCP: Execute Deployment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MCP: Execute Deployment": {
+      "main": [
+        [
+          {
+            "node": "Check Deployment Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Deployment Status": {
+      "main": [
+        [
+          {
+            "node": "Format Success Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract Error Logs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Success Data": {
+      "main": [
+        [
+          {
+            "node": "Send Success Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Error Logs": {
+      "main": [
+        [
+          {
+            "node": "OpenAI: Enhance Error Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI: Enhance Error Message": {
+      "main": [
+        [
+          {
+            "node": "Prepare Error Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Error Email": {
+      "main": [
+        [
+          {
+            "node": "Send Error Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2025-11-01T00:00:00.000Z",
+  "versionId": "1"
+}
